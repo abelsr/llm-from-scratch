@@ -4,7 +4,7 @@ import torch.nn as nn
 from .layers.gpt import GPTBlock
 
 
-class GPT2(nn.Module):
+class GPT(nn.Module):
     def __init__(
         self,
         vocab_size: int,
@@ -15,7 +15,7 @@ class GPT2(nn.Module):
         dropout: float = 0.1,
         max_seq_length: int = 1024,
     ):
-        super(GPT2, self).__init__()
+        super(GPT, self).__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -26,6 +26,7 @@ class GPT2(nn.Module):
 
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_length, embed_dim)
+        self.embed_dropout = nn.Dropout(dropout)
         self.layers = nn.ModuleList(
             [
                 GPTBlock(
@@ -58,12 +59,13 @@ class GPT2(nn.Module):
         )  # (1, seq_length, embed_dim)
         x = token_embeds
         x = x + position_embeds  # (batch_size, seq_length, embed_dim)
+        x = self.embed_dropout(x)
 
         # Pass through the transformer blocks.
         for layer in self.layers:
             x = layer(x)  # (batch_size, seq_length, embed_dim)
 
         # Final layer normalization and output projection to vocabulary size.
-        x = self.ln_f(x)  # (batch_size, seq_length, embed
+        x = self.ln_f(x)  # (batch_size, seq_length, embed_dim)
         logits = self.head(x)  # (batch_size, seq_length, vocab_size)
         return logits

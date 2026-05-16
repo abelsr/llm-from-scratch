@@ -1,5 +1,8 @@
+from typing import Literal
+
 import torch
 import torch.nn as nn
+from sympy.core.random import sample
 
 from .layers.gpt import GPTBlock
 
@@ -74,6 +77,8 @@ class GPT(nn.Module):
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int,
+        top_k: int | None = None,
+        temperature: float = 1.0,
     ) -> torch.Tensor:
         """
         Generate new tokens given an input sequence of token indices.
@@ -86,11 +91,24 @@ class GPT(nn.Module):
             torch.Tensor: Generated token indices of shape (batch_size, seq_length + max_new_tokens).
         """
         for _ in range(max_new_tokens):
+            input_ids = input_ids[
+                :, -self.max_seq_length :
+            ]  # Ensure input does not exceed max_seq_length
             logits = self.forward(input_ids)  # (batch_size, seq_length, vocab_size)
             next_token_logits = logits[:, -1, :]  # (batch_size, vocab_size)
-            next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(
-                -1
-            )  # (batch_size, 1)
+            next_token_logits = next_token_logits / temperature
+
+            if top_k is not None:
+                top_k_values, _ = torch.topk(next_token_logits, top_k)
+                next_token_logits[
+                    next_token_logits < top_k_values[:, -1, None]
+                ] = -float("Inf")
+
+            next_token_probs = torch.softmax(
+                next_token_logits, dim=-1
+            )  # (batch_size, vocab_size)
+            next_token = torch.multinomial(next_token_probs, num_samples=1)  #
+
             input_ids = torch.cat(
                 (input_ids, next_token), dim=1
             )  # (batch_size, seq_length + 1)

@@ -1,8 +1,5 @@
-from typing import Literal
-
 import torch
 import torch.nn as nn
-from sympy.core.random import sample
 
 from .layers.gpt import GPTBlock
 

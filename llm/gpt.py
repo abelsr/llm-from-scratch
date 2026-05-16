@@ -69,3 +69,29 @@ class GPT(nn.Module):
         x = self.ln_f(x)  # (batch_size, seq_length, embed_dim)
         logits = self.head(x)  # (batch_size, seq_length, vocab_size)
         return logits
+
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int,
+    ) -> torch.Tensor:
+        """
+        Generate new tokens given an input sequence of token indices.
+
+        Args:
+            input_ids (torch.Tensor): Input token indices of shape (batch_size, seq_length).
+            max_new_tokens (int): Maximum number of new tokens to generate.
+
+        Returns:
+            torch.Tensor: Generated token indices of shape (batch_size, seq_length + max_new_tokens).
+        """
+        for _ in range(max_new_tokens):
+            logits = self.forward(input_ids)  # (batch_size, seq_length, vocab_size)
+            next_token_logits = logits[:, -1, :]  # (batch_size, vocab_size)
+            next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(
+                -1
+            )  # (batch_size, 1)
+            input_ids = torch.cat(
+                (input_ids, next_token), dim=1
+            )  # (batch_size, seq_length + 1)
+        return input_ids

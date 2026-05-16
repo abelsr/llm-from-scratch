@@ -1,0 +1,69 @@
+import torch
+import torch.nn as nn
+
+from .layers.gpt import GPTBlock
+
+
+class GPT2(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        embed_dim: int,
+        num_heads: int,
+        num_layers: int,
+        mlp_expansion: int = 4,
+        dropout: float = 0.1,
+        max_seq_length: int = 1024,
+    ):
+        super(GPT2, self).__init__()
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.mlp_expansion = mlp_expansion
+        self.dropout = dropout
+        self.max_seq_length = max_seq_length
+
+        self.token_embedding = nn.Embedding(vocab_size, embed_dim)
+        self.position_embedding = nn.Embedding(max_seq_length, embed_dim)
+        self.layers = nn.ModuleList(
+            [
+                GPTBlock(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                    mlp_expansion_factor=mlp_expansion,
+                    max_seq_length=max_seq_length,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.ln_f = nn.LayerNorm(embed_dim)
+        self.head = nn.Linear(embed_dim, vocab_size, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        # Input of the model is a tensor of shape (batch_size, seq_length) containing token indices.
+        batch_size, seq_length = x.size()
+
+        # Create position indices and get token and position embeddings.
+        position_indices = torch.arange(seq_length, device=x.device).unsqueeze(
+            0
+        )  # (1, seq_length)
+
+        # Get token and position embeddings, and sum them to get the input to the transformer blocks.
+        token_embeds = self.token_embedding(x)  # (batch_size, seq_length, embed_dim)
+        position_embeds = self.position_embedding(
+            position_indices
+        )  # (1, seq_length, embed_dim)
+        x = token_embeds
+        x = x + position_embeds  # (batch_size, seq_length, embed_dim)
+
+        # Pass through the transformer blocks.
+        for layer in self.layers:
+            x = layer(x)  # (batch_size, seq_length, embed_dim)
+
+        # Final layer normalization and output projection to vocabulary size.
+        x = self.ln_f(x)  # (batch_size, seq_length, embed
+        logits = self.head(x)  # (batch_size, seq_length, vocab_size)
+        return logits

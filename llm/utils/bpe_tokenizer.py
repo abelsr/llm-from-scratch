@@ -110,6 +110,15 @@ class BPETokenizer(Tokenizer):
         self.special_tokens: list[str] = list(special_tokens or [])
         self.special_set: set[str] = set(self.special_tokens)
         self.merges: list[tuple[Token, Token]] = list(merges) if merges else []
+        # Lazy cache: pair -> merge rank (its index in `merges`). Only built on
+        # first encode, so loading a tokenizer stays cheap if you never encode.
+        self._pair_rank: dict[tuple[Token, Token], int] | None = None
+
+    def _ensure_pair_rank(self) -> dict[tuple[Token, Token], int]:
+        """Build (once) the map from merge pair -> its rank (order in `merges`)."""
+        if self._pair_rank is None:
+            self._pair_rank = {pair: i for i, pair in enumerate(self.merges)}
+        return self._pair_rank
 
     # ------------------------------------------------------------------ #
     # Tokenizer API
@@ -162,20 +171,52 @@ class BPETokenizer(Tokenizer):
                 i += 1
         return out
 
+    def _merge_to_fixed_point(self, tokens: list[Token]) -> list[Token]:
+        """Reproduce the training-time merges efficiently.
+
+        Instead of replaying *all* learned rules (O(#merges * len)), repeatedly
+        merge the lowest-rank adjacent pair that is actually present, until no
+        further learned pair remains. This is the standard BPE decoding
+        procedure and costs O(len^2) instead of O(#merges * len), which matters
+        a lot when a tokenizer has ~100k merge rules.
+        """
+        rank = self._ensure_pair_rank()
+        tokens = list(tokens)
+        while len(tokens) > 1:
+            best_i = -1
+            best_rank = None
+            for i in range(len(tokens) - 1):
+                r = rank.get((tokens[i], tokens[i + 1]))
+                if r is not None and (best_rank is None or r < best_rank):
+                    best_rank = r
+                    best_i = i
+            if best_i < 0:
+                break
+            first, second = tokens[best_i], tokens[best_i + 1]
+            merged = first + second
+            # Merge every occurrence of this pair in a single pass.
+            out: list[Token] = []
+            i, n = 0, len(tokens)
+            while i < n:
+                if i < n - 1 and tokens[i] == first and tokens[i + 1] == second:
+                    out.append(merged)
+                    i += 2
+                else:
+                    out.append(tokens[i])
+                    i += 1
+            tokens = out
+        return tokens
+
     def tokenize(self, text: str) -> list[str]:
         """Return the human-readable token sequence for ``text``."""
         pre = self.pre_tokenize(text)
-        current = self._base_split_tokens(pre)
-        for pair in self.merges:
-            current = self._merge_once(current, pair)
+        current = self._merge_to_fixed_point(self._base_split_tokens(pre))
         return [token_to_display(t) for t in current]
 
     def encode(self, text: str) -> list[int]:
         """Encode ``text`` into token IDs using the learned merge order."""
         pre = self.pre_tokenize(text)
-        current = self._base_split_tokens(pre)
-        for pair in self.merges:
-            current = self._merge_once(current, pair)
+        current = self._merge_to_fixed_point(self._base_split_tokens(pre))
 
         # Map to IDs. Unknown tokens should not happen if `merges` and
         # `vocab` come from the same training run; surface a clear error

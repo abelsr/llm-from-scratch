@@ -11,8 +11,9 @@ This is a script version of ``notebooks/tokenizer.ipynb``. It:
      :class:`llm.utils.bpe_tokenizer.BPETokenizer`),
    * ``tokenizer_vocabulary.csv`` -- human-readable mapping.
 
-Standard library only (no torch / pandas / numpy required), so it runs
-anywhere Python 3.10+ is available.
+Requires only the standard library plus (optionally) ``rich`` for a nicer
+progress bar. If ``rich`` is not installed, a plain-text fallback is used,
+so the script still runs anywhere Python 3.10+ is available.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import re
 import sys
 import time
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Sequence
 
@@ -43,46 +45,107 @@ from llm.utils.bpe_tokenizer import (  # noqa: E402
 )
 
 # --------------------------------------------------------------------------- #
-# Progress bar (tqdm if available, plain fallback otherwise)
+# Rich progress bar (falls back to plain text when rich is not installed)
 # --------------------------------------------------------------------------- #
 try:
-    from tqdm import tqdm
-except ImportError:  # pragma: no cover
-    class tqdm:  # type: ignore[no-redef]
-        def __init__(self, iterable=None, total=None, desc=None, **_kw):
-            self.iterable = iterable
-            self.total = total
-            self.desc = desc
-            self._i = 0
-            if desc:
+    from rich.console import Console
+    from rich.markup import escape
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    HAS_RICH = True
+except ImportError:  # pragma: no cover - rich is optional
+    HAS_RICH = False
+
+
+def _make_console(enabled: bool) -> "Console | None":
+    """Return a rich ``Console`` when enabled and rich is available, else None."""
+    if enabled and HAS_RICH:
+        return Console()
+    return None
+
+
+def _spinner(console, message: str):
+    """Context manager that shows a rich spinner, or a no-op if no console."""
+    return console.status(message) if console is not None else nullcontext()
+
+
+class ProgressBar:
+    """A tiny tqdm-like wrapper around :class:`rich.progress.Progress`.
+
+    Exposes ``update(n)``, ``set_postfix(mapping)`` and ``close()`` so the
+    training loop reads the same way it did with tqdm, plus a ``print``
+    helper that renders messages without clobbering the live display.
+    Falls back to plain-text output when ``rich`` is unavailable.
+    """
+
+    def __init__(
+        self,
+        total: int,
+        desc: str = "",
+        enabled: bool = True,
+        console: "Console | None" = None,
+    ) -> None:
+        self.total = total
+        self.desc = desc
+        self.console = console
+        self._count = 0
+        self.enabled = bool(enabled and HAS_RICH and console is not None)
+        if self.enabled:
+            self._progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("•"),
+                TimeElapsedColumn(),
+                console=console,
+            )
+            self._progress.start()
+            self._task = self._progress.add_task(desc, total=total)
+        else:
+            self._progress = None
+            if enabled and desc:
                 print(f"[{desc}]", flush=True)
 
-        def __iter__(self):
-            for x in (self.iterable or []):
-                yield x
-                self._i += 1
-                if self.total and (self._i % max(1, self.total // 20) == 0):
-                    self._print()
+    def update(self, n: int = 1) -> None:
+        self._count += n
+        if self.enabled:
+            self._progress.advance(self._task, n)
 
-        def _print(self):
-            if self.total:
-                pct = 100 * self._i / self.total
-                print(f"  {self._i:>7d}/{self.total} ({pct:5.1f}%)", end="\r", flush=True)
-
-        def update(self, n=1):
-            self._i += n
-            if self.total and (self._i % max(1, self.total // 20) == 0):
-                self._print()
-
-        def set_postfix(self, mapping: dict):
+    def set_postfix(self, **mapping: str) -> None:
+        if self.enabled:
+            parts = "  ".join(
+                f"[dim]{k}=[/dim]{escape(str(v))}" for k, v in mapping.items()
+            )
+            self._progress.update(self._task, description=f"{self.desc}  {parts}")
+        elif self.total:
             parts = "  ".join(f"{k}={v}" for k, v in mapping.items())
-            if self.total:
-                pct = 100 * self._i / self.total
-                print(f"  {self._i}/{self.total} ({pct:5.1f}%)  {parts}", end="\r", flush=True)
+            pct = 100.0 * self._count / self.total
+            print(
+                f"  {self._count}/{self.total} ({pct:5.1f}%)  {parts}",
+                end="\r",
+                flush=True,
+            )
 
-        def close(self):
-            if self.total:
-                print()
+    def print(self, message: str) -> None:
+        """Emit a message that does not disrupt the live progress display."""
+        if self.console is not None and self.enabled:
+            self.console.print(message)
+        else:
+            print(message, flush=True)
+
+    def close(self) -> None:
+        if self.enabled:
+            self._progress.stop()
+        elif self.total and self._count:
+            print()
 
 
 # --------------------------------------------------------------------------- #
@@ -210,28 +273,32 @@ def train_bpe(
     max_vocab_size: int = 256 * 1024,
     lowercase: bool = False,
     verbose: bool = True,
+    console: "Console | None" = None,
 ) -> tuple[list[tuple[Token, Token]], dict[tuple[Token, ...], int]]:
     """Run the full BPE merge loop.
 
     Returns:
         (rule_set, final_split_dict)
     """
+    if console is None and verbose and HAS_RICH:
+        console = _make_console(True)
     special_set = set(special_tokens)
     text = normalize_text(corpus, lowercase=lowercase)
 
-    # Pre-tokenize, count, base split.
-    words = pre_tokenize(text, special_tokens)
-    words_count = dict(Counter(words))
-    split_dict = base_split(words_count, special_tokens)
-
-    stats = get_pair_stats(split_dict, special_set)
-    inverted_index = get_inverted_index(split_dict)
+    # Pre-processing: pre-tokenize, count, base split, initial pair stats.
+    # These are uncountable, so show a spinner instead of a bar.
+    with _spinner(console, "Pre-processing corpus (pre-tokenize + base split) ..."):
+        words = pre_tokenize(text, special_tokens)
+        words_count = dict(Counter(words))
+        split_dict = base_split(words_count, special_tokens)
+        stats = get_pair_stats(split_dict, special_set)
+        inverted_index = get_inverted_index(split_dict)
 
     initial_bytes = len(text.encode("utf-8"))
     rule_set: list[tuple[Token, Token]] = []
     cap = max_vocab_size - 256 - len(special_tokens)
 
-    bar = tqdm(total=steps, desc="BPE training", disable=not verbose)
+    bar = ProgressBar(total=steps, desc="BPE training", enabled=verbose, console=console)
     for step in range(steps):
         if not stats:
             break
@@ -240,11 +307,13 @@ def train_bpe(
         # Early stopping.
         if frequency < min_count:
             if verbose:
-                print(f"Stopping: most common pair frequency {frequency} < min_count {min_count}")
+                bar.print(
+                    f"Stopping: most common pair frequency {frequency} < min_count {min_count}"
+                )
             break
         if len(rule_set) >= cap:
             if verbose:
-                print(f"Stopping: reached max_vocab_size={max_vocab_size}")
+                bar.print(f"Stopping: reached max_vocab_size={max_vocab_size}")
             break
 
         first, second = most_common_pair
@@ -277,7 +346,7 @@ def train_bpe(
 
         rule_set.append(most_common_pair)
 
-        # Progress / metrics.
+        # Progress / metrics (bar updated every step, rich text every 100).
         if step % 100 == 0 or step == steps - 1:
             current_token_count = sum(len(t) * c for t, c in split_dict.items())
             compression = initial_bytes / current_token_count if current_token_count else 0.0
@@ -383,12 +452,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         else list(DEFAULT_SPECIAL_TOKENS)
     )
 
-    t0 = time.time()
-    print(f"Loading corpus from {args.corpus} (column={args.column!r}) ...")
-    corpus = load_corpus(args.corpus, column=args.column)
-    print(f"  corpus length: {len(corpus):,} chars  ({time.time() - t0:.1f}s)")
+    verbose = not args.quiet
+    console = _make_console(enabled=verbose)
 
-    print(f"Training BPE: steps={args.steps}  min_count={args.min_count}  max_vocab={args.max_vocab_size}")
+    def log(message: str) -> None:
+        if console is not None:
+            console.print(message)
+        else:
+            print(message, flush=True)
+
+    t0 = time.time()
+    with _spinner(
+        console,
+        f"Loading corpus from {args.corpus} (column={args.column!r}) ...",
+    ):
+        corpus = load_corpus(args.corpus, column=args.column)
+    log(f"Loaded corpus: {len(corpus):,} chars  ({time.time() - t0:.1f}s)")
+    log(
+        f"Training BPE: steps={args.steps}  min_count={args.min_count}  "
+        f"max_vocab={args.max_vocab_size}"
+    )
     rule_set, _ = train_bpe(
         corpus,
         special_tokens=special_tokens,
@@ -396,28 +479,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_count=args.min_count,
         max_vocab_size=args.max_vocab_size,
         lowercase=args.lowercase,
-        verbose=not args.quiet,
+        verbose=verbose,
+        console=console,
     )
-    print(f"  learned {len(rule_set):,} merge rules  ({time.time() - t0:.1f}s)")
+    log(f"Learned {len(rule_set):,} merge rules  ({time.time() - t0:.1f}s)")
 
     tokenizer = build_tokenizer_from_rules(rule_set, special_tokens)
     json_path, csv_path = save_tokenizer(tokenizer, args.output_dir)
-    print(f"Saved: {json_path}")
-    print(f"Saved: {csv_path}")
-    print(f"Final vocab size: {tokenizer.vocab_size:,}")
+    log(f"Saved: {json_path}")
+    log(f"Saved: {csv_path}")
+    log(f"Final vocab size: {tokenizer.vocab_size:,}")
 
     # Round-trip sanity check.
     sample = "Hello, world!  Is this working?"
     encoded = tokenizer.encode(sample)
     decoded = tokenizer.decode(encoded)
-    print(f"\nRound-trip check:")
-    print(f"  in : {sample!r}")
-    print(f"  ids: {encoded}")
-    print(f"  out: {decoded!r}")
+    log("")
+    log("Round-trip check:")
+    log(f"  in : {sample!r}")
+    log(f"  ids: {encoded}")
+    log(f"  out: {decoded!r}")
     assert decoded == sample, f"round-trip mismatch: {decoded!r} != {sample!r}"
-    print("  OK ✓")
+    log("  OK ✓")
 
-    print(f"\nTotal time: {time.time() - t0:.1f}s")
+    log("")
+    log(f"Total time: {time.time() - t0:.1f}s")
     return 0
 
 

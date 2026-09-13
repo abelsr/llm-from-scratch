@@ -10,6 +10,7 @@ services:
       - ./main.py:/phoson/main.py
       - ./pyproject.toml:/phoson/pyproject.toml
       - ./uv.lock:/phoson/uv.lock
-      - ./python-version:/phoson/.python-version
+      - ./.python-version:/phoson/.python-version
     ports:
       - "8000:8000"
+    command: sleep infinity

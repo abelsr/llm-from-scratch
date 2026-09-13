@@ -19,13 +19,16 @@ model = GPT(
 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 for epoch in range(10):
-    loss = np.inf
+    total, n = 0.0, 0
     for batch in dataloader:
         x, y = batch # x,y : (batch_size, seq_length) -> (8, 256)
         logits = model(x)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
         opt.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
+        total += loss.item()
+        n += 1
 
-    print(f"Epoch {epoch}: Loss {loss.item()}")
+    print(f"Epoch {epoch}: Avg loss = {total/n:.4f}")

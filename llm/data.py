@@ -92,7 +92,7 @@ class GPTDataset(Dataset):
             data: The encoded data as a numpy array.
             block_size: The size of each block of data to return.
         """
-        self.data = data
+        self.data = data.astype(np.int64)
         self.block_size = block_size
         self.n = len(data) - block_size
 
@@ -109,9 +109,9 @@ class GPTDataset(Dataset):
             The block of data at the specified index.
         """
         x = torch.from_numpy(
-            self.data[idx: idx + self.block_size].astype(np.int64)
+            self.data[idx: idx + self.block_size]
         )
         y = torch.from_numpy(
-            self.data[idx + 1: idx + 1 + self.block_size].astype(np.int64)
+            self.data[idx + 1: idx + 1 + self.block_size]
         )
         return x, y

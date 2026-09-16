@@ -52,6 +52,27 @@ static std::string ascii_lower(std::string s) {
     return s;
 }
 
+static void show_progress(const char *label, size_t done, size_t total,
+                          double elapsed) {
+    char buf[256];
+    if (total == 0) {
+        snprintf(buf, sizeof buf, "\r%-18s  (empty)  (%.1fs)", label,
+                 elapsed);
+    } else {
+        double pct = 100.0 * (double)done / (double)total;
+        snprintf(buf, sizeof buf, "\r%-18s %6.2f%%  %zu/%zu  (%.1fs)", label,
+                 pct, done, total, elapsed);
+    }
+    std::cerr << buf << std::flush;
+}
+
+static std::string progress_token(std::string s) {
+    for (char &c : s)
+        if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+    if (s.size() > 28) s.resize(28), s += "...";
+    return s;
+}
+
 int main(int argc, char **argv) {
     std::string corpus = "data/notebooks/claude_opus_4.6_4.7_reasoning_8.7k.csv";
     std::string column = "processed";
@@ -117,24 +138,44 @@ int main(int argc, char **argv) {
         if (!quiet)
             std::cerr << "Loading corpus from " << corpus << " (column='"
                       << column << "') ...\n";
-        auto records = bpe::read_csv_records(corpus);
+        auto records = bpe::read_csv_records(
+            corpus,
+            [&](size_t done, size_t total) {
+                if (!quiet) show_progress("Reading CSV", done, total, secs());
+            },
+            [&](size_t done, size_t total) {
+                if (!quiet) show_progress("Parsing CSV", done, total, secs());
+            });
+        if (!quiet) std::cerr << "\n";
         auto rows = bpe::csv_column(records, column);
         std::string joined;
         size_t total_len = 0;
         for (auto &r : rows) total_len += r.size() + 1;
         joined.reserve(total_len);
+        size_t join_every = std::max<size_t>(1, rows.size() / 100);
         for (size_t i = 0; i < rows.size(); ++i) {
             if (i) joined.push_back(' ');
             joined += rows[i];
+            if (!quiet && ((i + 1) % join_every == 0 || i + 1 == rows.size()))
+                show_progress("Joining rows", i + 1, rows.size(), secs());
         }
+        if (!quiet && !rows.empty()) std::cerr << "\n";
         if (lowercase) joined = ascii_lower(joined);
         if (!quiet)
             std::cerr << "Loaded corpus: " << joined.size() << " chars, "
                       << rows.size() << " rows (" << secs() << "s)\n";
 
         if (!quiet) std::cerr << "Pre-tokenizing + counting ...\n";
-        auto toks = bpe::pre_tokenize(joined, specials);
-        auto counted = bpe::count_words(toks);
+        auto toks = bpe::pre_tokenize(
+            joined, specials, [&](size_t done, size_t total) {
+                if (!quiet) show_progress("Pre-tokenizing", done, total, secs());
+            });
+        if (!quiet) std::cerr << "\n";
+        auto counted = bpe::count_words(
+            toks, [&](size_t done, size_t total) {
+                if (!quiet) show_progress("Counting tokens", done, total, secs());
+            });
+        if (!quiet) std::cerr << "\n";
         if (!quiet)
             std::cerr << "Distinct pre-tokens: " << counted.first.size()
                       << " (" << secs() << "s)\n";
@@ -147,10 +188,20 @@ int main(int argc, char **argv) {
                       << " min_count=" << cfg.min_count
                       << " max_vocab=" << cfg.max_vocab_size << "\n";
         int report_every = std::max(1, cfg.steps / 1000);
+        bool initialization_displayed = false;
         auto rules = bpe::train_bpe(
             counted.first, counted.second, specials, cfg,
             [&](const bpe::TrainProgress &pr) {
                 if (quiet) return;
+                if (pr.initializing) {
+                    show_progress(pr.phase.c_str(), pr.processed, pr.total,
+                                  secs());
+                    return;
+                }
+                if (!initialization_displayed) {
+                    std::cerr << "\n";
+                    initialization_displayed = true;
+                }
                 if (pr.stopped) {
                     std::cerr << "\nStopping: " << pr.stop_reason << "\n";
                     return;
@@ -158,9 +209,11 @@ int main(int argc, char **argv) {
                 if (pr.step % report_every == 0 || pr.step == cfg.steps - 1) {
                     char buf[256];
                     snprintf(buf, sizeof buf,
-                             "\r[%d/%d] rules=%d tok=%s freq=%lld (%.1fs)", pr.step,
-                             cfg.steps, pr.rule_count,
-                             pr.new_token_display.c_str(),
+                             "\rBPE training      %6.2f%%  [%d/%d] rules=%d tok=%s "
+                             "freq=%lld (%.1fs)",
+                             100.0 * (double)(pr.step + 1) / cfg.steps,
+                             pr.step + 1, cfg.steps, pr.rule_count + 1,
+                             progress_token(pr.new_token_display).c_str(),
                              (long long)pr.frequency, secs());
                     std::cerr << buf << std::flush;
                 }

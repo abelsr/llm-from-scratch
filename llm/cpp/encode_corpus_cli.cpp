@@ -24,6 +24,27 @@
 
 namespace fs = std::filesystem;
 
+static void show_progress(const char *label, size_t done, size_t total,
+                          double elapsed, double rate = 0.0) {
+    char buf[256];
+    if (total == 0) {
+        snprintf(buf, sizeof buf, "\r%-18s  (empty)  (%.1fs)", label,
+                 elapsed);
+    } else {
+        double pct = 100.0 * (double)done / (double)total;
+        if (rate > 0.0) {
+            double eta = ((double)total - (double)done) / rate;
+            snprintf(buf, sizeof buf,
+                     "\r%-18s %6.2f%%  %zu/%zu  %.0f rows/s  ETA %.1fs",
+                     label, pct, done, total, rate, eta);
+        } else {
+            snprintf(buf, sizeof buf, "\r%-18s %6.2f%%  %zu/%zu  (%.1fs)",
+                     label, pct, done, total, elapsed);
+        }
+    }
+    std::cerr << buf << std::flush;
+}
+
 static void usage(const char *prog) {
     std::cerr
         << "Usage: " << prog << " [options]\n"
@@ -112,7 +133,15 @@ int main(int argc, char **argv) {
 
         if (!quiet)
             std::cerr << "Loading corpus rows from " << corpus << " ...\n";
-        auto records = bpe::read_csv_records(corpus);
+        auto records = bpe::read_csv_records(
+            corpus,
+            [&](size_t done, size_t total) {
+                if (!quiet) show_progress("Reading CSV", done, total, secs());
+            },
+            [&](size_t done, size_t total) {
+                if (!quiet) show_progress("Parsing CSV", done, total, secs());
+            });
+        if (!quiet) std::cerr << "\n";
         auto rows = bpe::csv_column(records, column);
         if (max_rows >= 0 && (long long)rows.size() > max_rows)
             rows.resize((size_t)max_rows);
@@ -139,10 +168,8 @@ int main(int argc, char **argv) {
                 if (!quiet && (d % report_every == 0 || d == total)) {
                     std::lock_guard<std::mutex> lk(prog_mu);
                     double el = secs();
-                    char buf[256];
-                    snprintf(buf, sizeof buf, "\rEncoding corpus  %zu/%zu  %.0f rows/s  (%.1fs)",
-                             d, total, d / std::max(el, 1e-9), el);
-                    std::cerr << buf << std::flush;
+                    double rate = d / std::max(el, 1e-9);
+                    show_progress("Encoding corpus", d, total, el, rate);
                 }
             }
         };
@@ -169,10 +196,25 @@ int main(int argc, char **argv) {
         if (!out) throw std::runtime_error("cannot write: " + cache);
         static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
                       "int32 cache assumes little-endian");
-        for (auto &r : per_row)
+        size_t written = 0;
+        size_t last_reported = 0;
+        size_t write_report_every = std::max<size_t>(1, n_ids / 50);
+        for (auto &r : per_row) {
             out.write(reinterpret_cast<const char *>(r.data()),
                       (std::streamsize)(r.size() * sizeof(int32_t)));
+            written += r.size();
+            if (!quiet &&
+                written != last_reported &&
+                (written >= n_ids ||
+                 written / write_report_every !=
+                     last_reported / write_report_every)) {
+                show_progress("Writing cache", written, n_ids, secs());
+                last_reported = written;
+            }
+        }
+        if (!quiet && n_ids == 0) show_progress("Writing cache", 0, 0, secs());
         out.close();
+        if (!quiet) std::cerr << "\n";
 
         double dt = secs();
         std::cout << "Done in " << dt << "s. tokens=" << n_ids

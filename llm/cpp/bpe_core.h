@@ -18,6 +18,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,8 @@
 #include <vector>
 
 namespace bpe {
+
+using ProgressCallback = std::function<void(size_t, size_t)>;
 
 using Id = int32_t;      // token id inside the merge/content tables
 using OutId = int32_t;   // final vocabulary id (written to disk)
@@ -121,17 +124,41 @@ static std::string token_display(const std::string &bytes) {
 // Minimal RFC4180 reader: commas, quoted fields, "" escapes and embedded
 // newlines. A '"' starts a quoted section only at the beginning of a field
 // (else it is literal), matching Python's csv module for our corpora.
+// Optional callbacks report bytes read and bytes parsed, respectively.
 inline std::vector<std::vector<std::string>> read_csv_records(
-    const std::string &path) {
+    const std::string &path, const ProgressCallback &read_progress = nullptr,
+    const ProgressCallback &parse_progress = nullptr) {
     std::ifstream f(path, std::ios::binary);
     if (!f) throw std::runtime_error("cannot open CSV: " + path);
-    std::string data((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
+    f.seekg(0, std::ios::end);
+    std::streamoff end = f.tellg();
+    if (end < 0) throw std::runtime_error("cannot determine CSV size: " + path);
+    size_t n = static_cast<size_t>(end);
+    f.seekg(0, std::ios::beg);
+
+    std::string data(n, '\0');
+    constexpr size_t progress_chunk = 1 << 20;
+    size_t loaded = 0;
+    size_t next_read_report = progress_chunk;
+    if (read_progress) read_progress(0, n);
+    while (loaded < n) {
+        size_t chunk = std::min(progress_chunk, n - loaded);
+        f.read(data.data() + loaded, static_cast<std::streamsize>(chunk));
+        std::streamsize got = f.gcount();
+        if (got <= 0) throw std::runtime_error("error reading CSV: " + path);
+        loaded += static_cast<size_t>(got);
+        if (read_progress && (loaded >= next_read_report || loaded == n)) {
+            read_progress(loaded, n);
+            while (next_read_report <= loaded) next_read_report += progress_chunk;
+        }
+    }
     std::vector<std::vector<std::string>> records;
     std::vector<std::string> row;
     std::string field;
     bool in_quotes = false;
-    size_t i = 0, n = data.size();
+    size_t i = 0;
+    size_t next_parse_report = progress_chunk;
+    if (parse_progress) parse_progress(0, n);
     auto end_field = [&]() {
         row.push_back(field);
         field.clear();
@@ -172,6 +199,10 @@ inline std::vector<std::vector<std::string>> read_csv_records(
                 field.push_back(c);
                 ++i;
             }
+        }
+        if (parse_progress && (i >= next_parse_report || i == n)) {
+            parse_progress(i, n);
+            while (next_parse_report <= i) next_parse_report += progress_chunk;
         }
     }
     if (in_quotes) throw std::runtime_error("unterminated quote in CSV: " + path);
@@ -230,33 +261,67 @@ static void csv_write_field(std::string &o, const std::string &f) {
 // ---------------------------------------------------------------------------
 
 inline std::vector<std::string> pre_tokenize(
-    const std::string &text, const std::vector<std::string> &specials) {
+    const std::string &text, const std::vector<std::string> &specials,
+    const ProgressCallback &progress = nullptr) {
     std::vector<std::pair<bool, std::string>> segs; // (is_special, text)
     size_t pos = 0, n = text.size();
+    constexpr size_t progress_chunk = 1 << 20;
+    size_t next_scan_report = progress_chunk;
+    if (progress) progress(0, n);
+
+    // Scan once and only compare specials whose first byte matches. Calling
+    // string::find once per special could scan the whole corpus repeatedly
+    // before the first progress callback becomes visible.
+    std::array<std::vector<size_t>, 256> specials_by_first;
+    for (size_t k = 0; k < specials.size(); ++k) {
+        if (!specials[k].empty())
+            specials_by_first[(unsigned char)specials[k][0]].push_back(k);
+    }
+    size_t segment_start = 0;
     while (pos < n) {
-        size_t best_at = std::string::npos;
-        size_t best_k = 0;
-        for (size_t k = 0; k < specials.size(); ++k) {
-            if (specials[k].empty()) continue;
-            size_t at = text.find(specials[k], pos);
-            if (at != std::string::npos &&
-                (best_at == std::string::npos || at < best_at)) {
-                best_at = at;
-                best_k = k;
+        size_t match_k = std::string::npos;
+        for (size_t k : specials_by_first[(unsigned char)text[pos]]) {
+            if (pos + specials[k].size() <= n &&
+                text.compare(pos, specials[k].size(), specials[k]) == 0) {
+                match_k = k;
+                break;
             }
         }
-        if (best_at == std::string::npos) {
-            segs.push_back({false, text.substr(pos)});
-            break;
+        if (match_k != std::string::npos) {
+            if (pos > segment_start)
+                segs.push_back({false, text.substr(segment_start, pos - segment_start)});
+            segs.push_back({true, specials[match_k]});
+            pos += specials[match_k].size();
+            segment_start = pos;
+        } else {
+            ++pos;
         }
-        if (best_at > pos) segs.push_back({false, text.substr(pos, best_at - pos)});
-        segs.push_back({true, specials[best_k]});
-        pos = best_at + specials[best_k].size();
+        if (progress && (pos >= next_scan_report || pos == n)) {
+            progress(pos / 2, n);
+            while (next_scan_report <= pos) next_scan_report += progress_chunk;
+        }
     }
+    if (segment_start < n)
+        segs.push_back({false, text.substr(segment_start, n - segment_start)});
 
     std::vector<std::string> out;
-    for (auto &sg : segs) {        if (sg.first) {
+    size_t processed = 0;
+    size_t next_report = progress_chunk;
+    size_t last_report = 0;
+    auto report = [&](size_t done) {
+        size_t scaled = done == n ? n : n / 2 + done / 2;
+        if (progress && scaled != last_report &&
+            (done >= next_report || done == n)) {
+            progress(scaled, n);
+            last_report = scaled;
+            while (next_report <= done) next_report += 1 << 20;
+        }
+    };
+    for (auto &sg : segs) {
+        if (sg.first) {
             out.push_back(sg.second);
+            processed += sg.second.size();
+            report(processed);
             continue;
         }
         const std::string &s = sg.second;
@@ -280,7 +345,10 @@ inline std::vector<std::string> pre_tokenize(
                 out.push_back(s.substr(i, k - i));
                 i = k;
             }
+            report(processed + i);
         }
+        processed += s.size();
+        report(processed);
     }
     return out;
 }
@@ -288,11 +356,15 @@ inline std::vector<std::string> pre_tokenize(
 // Distinct pre-tokens + counts in first-occurrence order (like
 // dict(Counter(...)) in Python, which keeps insertion order).
 inline std::pair<std::vector<std::string>, std::vector<Count>> count_words(
-    const std::vector<std::string> &tokens) {
+    const std::vector<std::string> &tokens,
+    const ProgressCallback &progress = nullptr) {
     std::vector<std::string> words;
     std::vector<Count> counts;
     std::unordered_map<std::string, size_t> idx;
     idx.reserve(tokens.size() * 2 + 1);
+    if (progress) progress(0, tokens.size());
+    size_t i = 0;
+    size_t report_every = std::max<size_t>(1, tokens.size() / 100);
     for (auto &t : tokens) {
         auto f = idx.find(t);
         if (f == idx.end()) {
@@ -302,6 +374,9 @@ inline std::pair<std::vector<std::string>, std::vector<Count>> count_words(
         } else {
             counts[f->second] += 1;
         }
+        ++i;
+        if (progress && (i % report_every == 0 || i == tokens.size()))
+            progress(i, tokens.size());
     }
     return {words, counts};
 }
@@ -324,6 +399,10 @@ struct TrainProgress {
     double compression = 0.0;
     bool stopped = false;
     std::string stop_reason;
+    bool initializing = false;
+    std::string phase;
+    size_t processed = 0;
+    size_t total = 0;
 };
 
 static std::string word_key(const std::vector<Id> &toks) {
@@ -358,7 +437,8 @@ struct HeapCmp {
 };
 
 // Runs the merge loop. `words`/`counts` come from count_words().
-// Progress callback is invoked every step (cheap); the CLI throttles output.
+// Progress callback is invoked during initialization and every merge step;
+// the CLI throttles output.
 inline std::vector<std::pair<std::string, std::string>> train_bpe(
     const std::vector<std::string> &words, const std::vector<Count> &counts,
     const std::vector<std::string> &specials, const TrainConfig &cfg,
@@ -379,8 +459,24 @@ inline std::vector<std::pair<std::string, std::string>> train_bpe(
     std::unordered_map<std::string, int> windex;
     windex.reserve(words.size() * 2 + 1);
     long long token_total = 0; // sum(len * count), for the compression ratio
+    auto report_initialization = [&](const char *phase, size_t done,
+                                     size_t total) {
+        if (!progress) return;
+        TrainProgress pr;
+        pr.initializing = true;
+        pr.phase = phase;
+        pr.processed = done;
+        pr.total = total;
+        progress(pr);
+    };
+    if (words.empty()) report_initialization("base split", 0, 0);
+    size_t split_report_every = std::max<size_t>(1, words.size() / 100);
     for (size_t i = 0; i < words.size(); ++i) {
-        if (counts[i] <= 0) continue;
+        if (counts[i] <= 0) {
+            if ((i + 1) % split_report_every == 0 || i + 1 == words.size())
+                report_initialization("base split", i + 1, words.size());
+            continue;
+        }
         std::vector<Id> toks;
         auto it = special_id.find(words[i]);
         if (it != special_id.end()) {
@@ -388,7 +484,12 @@ inline std::vector<std::pair<std::string, std::string>> train_bpe(
         } else {
             toks.reserve(words[i].size());
             for (unsigned char b : words[i]) toks.push_back((Id)b);
-            if (toks.empty()) continue;
+            if (toks.empty()) {
+                if ((i + 1) % split_report_every == 0 ||
+                    i + 1 == words.size())
+                    report_initialization("base split", i + 1, words.size());
+                continue;
+            }
         }
         std::string k = word_key(toks);
         auto f = windex.find(k);
@@ -404,6 +505,8 @@ inline std::vector<std::pair<std::string, std::string>> train_bpe(
             token_total += (long long)w.toks.size() * w.count;
             wv.push_back(std::move(w));
         }
+        if ((i + 1) % split_report_every == 0 || i + 1 == words.size())
+            report_initialization("base split", i + 1, words.size());
     }
 
     std::unordered_map<PairKey, Count> freq;
@@ -412,6 +515,8 @@ inline std::vector<std::pair<std::string, std::string>> train_bpe(
     freq.reserve(wv.size() * 2 + 1);
     inv.reserve(wv.size() * 2 + 1);
     long long next_seq = 0;
+    if (wv.empty()) report_initialization("pair index", 0, 0);
+    size_t index_report_every = std::max<size_t>(1, wv.size() / 100);
     for (int wi = 0; wi < (int)wv.size(); ++wi) {
         auto &toks = wv[wi].toks;
         Count c = wv[wi].count;
@@ -428,6 +533,9 @@ inline std::vector<std::pair<std::string, std::string>> train_bpe(
             }
             inv[p].insert(wi);
         }
+        if ((size_t)(wi + 1) % index_report_every == 0 ||
+            wi + 1 == (int)wv.size())
+            report_initialization("pair index", (size_t)wi + 1, wv.size());
     }
     std::priority_queue<HeapEntry, std::vector<HeapEntry>, HeapCmp> heap;
     for (auto &kv : freq) heap.push({kv.second, seq[kv.first], kv.first});

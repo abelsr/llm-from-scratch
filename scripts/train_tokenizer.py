@@ -14,6 +14,10 @@ This is a script version of ``notebooks/tokenizer.ipynb``. It:
 Requires only the standard library plus (optionally) ``rich`` for a nicer
 progress bar. If ``rich`` is not installed, a plain-text fallback is used,
 so the script still runs anywhere Python 3.10+ is available.
+
+For large corpora, the standalone C++ tools under ``llm/cpp`` (built with
+``scripts/build_cpp_tools.sh``) offer the same training/encoding without
+any Python dependency.
 """
 
 from __future__ import annotations
@@ -275,7 +279,7 @@ def train_bpe(
     verbose: bool = True,
     console: "Console | None" = None,
 ) -> tuple[list[tuple[Token, Token]], dict[tuple[Token, ...], int]]:
-    """Run the full BPE merge loop.
+    """Run the full BPE merge loop (pure Python).
 
     Returns:
         (rule_set, final_split_dict)

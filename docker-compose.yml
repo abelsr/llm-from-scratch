@@ -14,3 +14,10 @@ services:
     ports:
       - "8000:8000"
     command: sleep infinity
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

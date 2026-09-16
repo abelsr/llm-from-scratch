@@ -9,6 +9,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from rich.console import Console
 from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -62,7 +63,7 @@ def main() -> None:
         use_compile = os.environ.get("COMPILE", "0") == "1"
         seed = int(os.environ.get("SEED", "1337"))
         torch.manual_seed(seed + dist.get_rank())
-        rank_log("process group initialized")
+        # rank_log("process group initialized")
 
         if is_main_process():
             console.rule("[bold green]GPT DDP training[/bold green]")
@@ -72,9 +73,14 @@ def main() -> None:
             for index in range(torch.cuda.device_count()):
                 table.add_row(f"cuda:{index}", torch.cuda.get_device_name(index))
             console.print(table)
+            EXP_NAME = Prompt.ask(
+                "[bold]Enter experiment name[/bold]", default="gpt_ddp_experiment"
+            )
+            if not EXP_NAME:
+                raise ValueError("Experiment name cannot be empty. Please provide a valid name.")
 
         max_tokens = int(os.environ.get("MAX_TOKENS", "500000"))
-        rank_log("loading corpus")
+        # rank_log("loading corpus")
         ids = np.fromfile(
             "data/tokenizer/corpus_ids.bin",
             dtype=np.int32,
@@ -95,7 +101,7 @@ def main() -> None:
             pin_memory=True,
             persistent_workers=True,
         )
-        rank_log("dataset and dataloader ready")
+        # rank_log("dataset and dataloader ready")
 
         model = GPT(
             vocab_size=vocab_size,
@@ -105,9 +111,9 @@ def main() -> None:
             max_seq_length=256,
         ).to(device)
         if use_compile:
-            rank_log("wrapping model with torch.compile")
+            # rank_log("wrapping model with torch.compile")
             model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
-        rank_log("wrapping model with DDP")
+        # rank_log("wrapping model with DDP")
         model = DDP(
             model, 
             device_ids=[local_rank], 
@@ -115,7 +121,7 @@ def main() -> None:
             static_graph=True,
             gradient_as_bucket_view=True,
         )
-        rank_log("DDP ready")
+        # rank_log("DDP ready")
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, fused=True)
 
         if is_main_process():
@@ -203,7 +209,7 @@ def main() -> None:
                     )
                 
                 if is_main_process():
-                    checkpoint_path = f"checkpoints/gpt_epoch_{epoch + 1}.pt"
+                    checkpoint_path = f"checkpoints/{EXP_NAME}/gpt_epoch_{epoch + 1}.pt"
                     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
                     torch.save(
                         {

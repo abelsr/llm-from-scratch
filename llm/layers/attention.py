@@ -40,11 +40,7 @@ class MultiHeadAttentionBlock(nn.Module):
         self.w_k = nn.Linear(embed_dim, embed_dim)
         self.w_v = nn.Linear(embed_dim, embed_dim)
         self.w_o = nn.Linear(embed_dim, embed_dim)
-        # self.scale = self.head_dim**-0.5
         self.dropout = nn.Dropout(dropout)
-        # self.register_buffer(
-        #     "mask", torch.tril(torch.ones(max_seq_length, max_seq_length)).bool()
-        # )  # We use max_seq_length as a maximum sequence length for the mask, which can be adjusted as needed.
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -75,26 +71,6 @@ class MultiHeadAttentionBlock(nn.Module):
             .transpose(1, 2)
         )  # (batch_size, num_heads, seq_length, head_dim)
 
-        # Naive implementation of scaled dot-product attention with masking for causal attention.
-        # mask = self.mask[:seq_length, :seq_length].to(
-        #     x.device
-        # )  # (seq_length, seq_length)
-
-        # attention_scores = (
-        #     torch.matmul(Q, K.transpose(-2, -1)) * self.scale
-        # )  # (batch_size, num_heads, seq_length, seq_length)
-        # attention_scores = attention_scores.masked_fill(~mask, float("-inf"))
-        # attention_scores = (
-        #     attention_scores - attention_scores.max(dim=-1, keepdim=True)[0]
-        # )
-        # attention = F.softmax(attention_scores, dim=-1)
-        # attention = self.dropout(attention)
-
-        # output = torch.matmul(
-        #     attention, V
-        # )  # (batch_size, num_heads, seq_length, head_dim)
-        
-        # Using PyTorch's built-in scaled dot-product attention function for efficiency and clarity.
         output = F.scaled_dot_product_attention(
             Q,
             K,

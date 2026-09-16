@@ -15,8 +15,10 @@ from rich.progress import (
 )
 import numpy as np
 import torch
-
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -58,15 +60,16 @@ model = GPT(
 )
 model.to(device)
 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-console.print(
-    f"[cyan]Model:[/cyan] GPT(vocab={vocab_size}, dim=128, heads=2, layers=2, ctx=256) • "
-    f"[bold]{sum(p.numel() for p in model.parameters()):,}[/bold] params"
-)
-console.print(
-    f"[cyan]Device:[/cyan] {device} • "
-    f"[dim]{torch.cuda.get_device_name(device) if device.type == 'cuda' else ''}[/dim]"
-)
-console.print("[cyan]Optimizer:[/cyan] AdamW(lr=1e-3) • grad_clip=1.0 • epochs=10")
+
+table = Table(title="Model Summary", show_header=True, header_style="bold magenta")
+table.add_column("Component", justify="left")
+table.add_column("Value", justify="left")
+table.add_row("Vocabulary Size", f"{vocab_size:,}")
+table.add_row("Batch Size", f"{batch_size:,}")
+table.add_row("DataLoader Size", f"{len(dataloader):,}")
+table.add_row("Model Parameters", f"{sum(p.numel() for p in model.parameters()):,}")
+table.add_row("Device", f"{device}")
+console.print(table)
 
 console.print("[bold]Starting training loop...[/bold]")
 with Progress(

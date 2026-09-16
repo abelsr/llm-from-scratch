@@ -66,7 +66,7 @@ def main() -> None:
                 table.add_row(f"cuda:{index}", torch.cuda.get_device_name(index))
             console.print(table)
 
-        max_tokens = 10_000_000
+        max_tokens = 500_000
         rank_log("loading corpus")
         ids = np.fromfile(
             "data/tokenizer/corpus_ids.bin",
@@ -77,7 +77,7 @@ def main() -> None:
             raise ValueError("MAX_TOKENS must be greater than the block size (256).")
         dataset = GPTDataset(ids, block_size=256)
         vocab_size = int(ids.max() + 1)
-        batch_size_per_gpu = 96
+        batch_size_per_gpu = 32
         workers_per_process = max(1, min(8, (os.cpu_count() or 1) // world_size))
         sampler = DistributedSampler(dataset, shuffle=True)
         dataloader = DataLoader(
@@ -92,18 +92,24 @@ def main() -> None:
 
         model = GPT(
             vocab_size=vocab_size,
-            embed_dim=128,
-            num_heads=2,
-            num_layers=2,
+            embed_dim=1024,
+            num_heads=4,
+            num_layers=4,
             max_seq_length=256,
         ).to(device)
         if use_compile:
             rank_log("wrapping model with torch.compile")
             model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
         rank_log("wrapping model with DDP")
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        model = DDP(
+            model, 
+            device_ids=[local_rank], 
+            output_device=local_rank, 
+            static_graph=True,
+            gradient_as_bucket_view=True,
+        )
         rank_log("DDP ready")
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, fused=True)
 
         if is_main_process():
             table = Table(title="Training Summary", header_style="bold magenta")
@@ -188,17 +194,15 @@ def main() -> None:
                         f"  [bold]Epoch {epoch + 1}/{epochs}[/bold] "
                         f"avg loss [yellow]{final_loss:.4f}[/yellow]"
                     )
-
-        if is_main_process():
-            console.print(
-                Panel(
-                    "[bold green]DDP training complete[/bold green]\n"
-                    f"Final epoch avg loss: [yellow]{final_loss:.4f}[/yellow] | "
-                    f"global batch: {batch_size_per_gpu * world_size:,}",
-                    title="Summary",
-                    border_style="green",
-                )
-            )
+                
+                # Save the model checkpoint after each epoch
+                if is_main_process():
+                    checkpoint_path = f"checkpoints/gpt_epoch_{epoch + 1}.pt"
+                    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+                    torch.save(model.module.state_dict(), checkpoint_path)
+                    progress.console.print(
+                        f"  [bold]Checkpoint saved:[/bold] {checkpoint_path}"
+                    )
     finally:
         dist.destroy_process_group()
 

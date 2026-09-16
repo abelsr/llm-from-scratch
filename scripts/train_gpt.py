@@ -3,6 +3,7 @@ import sys
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -22,19 +23,34 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from llm.gpt import GPT
 from llm.data import GPTDataset
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 console = Console()
+
+devices = torch.cuda.device_count()
+# Print rich table with device info
+table = Table(title="Available Devices", show_header=True, header_style="bold magenta")
+table.add_column("Device", justify="left")
+table.add_column("Name", justify="left")
+for i in range(devices):
+    table.add_row(f"cuda:{i}", torch.cuda.get_device_name(i))
+console.print(table)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 console.rule("[bold green]GPT training[/bold green]")
 ids = np.fromfile("data/tokenizer/corpus_ids.bin", dtype=np.int32)
 dataset = GPTDataset(ids, block_size=256)
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=16, shuffle=True)
+vocab_size = int(ids.max() + 1)
+batch_size = 96
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 console.print(
     f"[cyan]Dataset:[/cyan] {len(dataset):,} samples"
 )
 
+console.print(f"[cyan]Vocabulary size:[/cyan] {vocab_size:,} tokens")
+console.print(f"[cyan]Batch size:[/cyan] {batch_size:,}")
+console.print(f"[cyan]DataLoader size:[/cyan] {len(dataloader):,}")
+
 model = GPT(
-    vocab_size=100_264,
+    vocab_size=vocab_size,
     embed_dim=128,
     num_heads=2,
     num_layers=2,
@@ -43,7 +59,7 @@ model = GPT(
 model.to(device)
 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
 console.print(
-    f"[cyan]Model:[/cyan] GPT(vocab=100_264, dim=128, heads=2, layers=2, ctx=256) • "
+    f"[cyan]Model:[/cyan] GPT(vocab={vocab_size}, dim=128, heads=2, layers=2, ctx=256) • "
     f"[bold]{sum(p.numel() for p in model.parameters()):,}[/bold] params"
 )
 console.print(
@@ -61,12 +77,12 @@ with Progress(
     TimeElapsedColumn(),
     TimeRemainingColumn()
 ) as progress:
-    task = progress.add_task("Training", total=10 * len(dataloader))
+    task = progress.add_task("Training", total=len(dataloader))
     for epoch in range(5):
         total, n = 0.0, 0
         with torch.amp.autocast(
             device_type=device.type,
-            dtype=torch.float16,
+            dtype=torch.bfloat16,
         ):
             for batch in dataloader:
                 x, y = batch  # x,y : (batch_size, seq_length) -> (8, 256)
@@ -95,8 +111,8 @@ console.print(
     Panel(
         "[bold green]Training complete[/bold green]\n"
         f"Final epoch avg loss: [yellow]{total / n:.4f}[/yellow] • "
-        f"steps: {10 * len(dataloader):,} "
-        f"([dim]{10 * len(dataloader) * 8 * 256:,} tokens @ 8×256[/dim])",
+        f"steps: {len(dataloader):,} "
+        f"([dim]{len(dataloader) * batch_size:,} tokens @ {batch_size}×256[/dim])",
         title="Summary",
         border_style="green",
     )

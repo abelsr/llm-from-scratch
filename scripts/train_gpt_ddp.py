@@ -36,6 +36,11 @@ def rank_log(message: str) -> None:
     print(f"[rank {dist.get_rank()}] {message}", flush=True)
 
 
+def unwrap_model(model: DDP) -> torch.nn.Module:
+    """Return the original GPT module for portable checkpoints."""
+    return getattr(model.module, "_orig_mod", model.module)
+
+
 def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("DDP training requires CUDA GPUs.")
@@ -55,6 +60,8 @@ def main() -> None:
     try:
         torch.set_float32_matmul_precision("high")
         use_compile = os.environ.get("COMPILE", "0") == "1"
+        seed = int(os.environ.get("SEED", "1337"))
+        torch.manual_seed(seed + dist.get_rank())
         rank_log("process group initialized")
 
         if is_main_process():
@@ -66,7 +73,7 @@ def main() -> None:
                 table.add_row(f"cuda:{index}", torch.cuda.get_device_name(index))
             console.print(table)
 
-        max_tokens = 500_000
+        max_tokens = int(os.environ.get("MAX_TOKENS", "500000"))
         rank_log("loading corpus")
         ids = np.fromfile(
             "data/tokenizer/corpus_ids.bin",
@@ -126,7 +133,7 @@ def main() -> None:
             table.add_row("Model parameters", f"{sum(p.numel() for p in model.parameters()):,}")
             console.print(table)
 
-        epochs = 5
+        epochs = int(os.environ.get("EPOCHS", "5"))
         log_every = 20
         final_loss = float("nan")
         if is_main_process():
@@ -195,11 +202,27 @@ def main() -> None:
                         f"avg loss [yellow]{final_loss:.4f}[/yellow]"
                     )
                 
-                # Save the model checkpoint after each epoch
                 if is_main_process():
                     checkpoint_path = f"checkpoints/gpt_epoch_{epoch + 1}.pt"
                     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-                    torch.save(model.module.state_dict(), checkpoint_path)
+                    torch.save(
+                        {
+                            "epoch": epoch + 1,
+                            "model_state_dict": unwrap_model(model).state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "config": {
+                                "vocab_size": vocab_size,
+                                "embed_dim": 1024,
+                                "num_heads": 4,
+                                "num_layers": 4,
+                                "max_seq_length": 256,
+                                "batch_size_per_gpu": batch_size_per_gpu,
+                                "world_size": world_size,
+                                "max_tokens": max_tokens,
+                            },
+                        },
+                        checkpoint_path,
+                    )
                     progress.console.print(
                         f"  [bold]Checkpoint saved:[/bold] {checkpoint_path}"
                     )

@@ -26,6 +26,7 @@ from llm.gpt import GPT
 from llm.data import GPTDataset
 
 console = Console()
+console.rule("[bold green]GPT training[/bold green]")
 
 devices = torch.cuda.device_count()
 # Print rich table with device info
@@ -37,19 +38,19 @@ for i in range(devices):
 console.print(table)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-console.rule("[bold green]GPT training[/bold green]")
 ids = np.fromfile("data/tokenizer/corpus_ids.bin", dtype=np.int32)
 dataset = GPTDataset(ids, block_size=256)
 vocab_size = int(ids.max() + 1)
 batch_size = 96
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-console.print(
-    f"[cyan]Dataset:[/cyan] {len(dataset):,} samples"
-)
-
-console.print(f"[cyan]Vocabulary size:[/cyan] {vocab_size:,} tokens")
-console.print(f"[cyan]Batch size:[/cyan] {batch_size:,}")
-console.print(f"[cyan]DataLoader size:[/cyan] {len(dataloader):,}")
+table = Table(title="Dataset Summary", show_header=True, header_style="bold magenta")
+table.add_column("Component", justify="left")
+table.add_column("Value", justify="left")
+table.add_row("Dataset Size", f"{len(dataset):,}")
+table.add_row("Vocabulary Size", f"{vocab_size:,}")
+table.add_row("Batch Size", f"{batch_size:,}")
+table.add_row("DataLoader Size", f"{len(dataloader):,}")
+console.print(table)
 
 model = GPT(
     vocab_size=vocab_size,

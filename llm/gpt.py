@@ -41,6 +41,7 @@ class GPT(nn.Module):
         )
         self.ln_f = nn.LayerNorm(embed_dim)
         self.head = nn.Linear(embed_dim, vocab_size, bias=False)
+        self.head.weight = self.token_embedding.weight
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 

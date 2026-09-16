@@ -100,7 +100,7 @@ def main() -> None:
         model = GPT(
             vocab_size=vocab_size,
             embed_dim=1024,
-            num_heads=4,
+            num_heads=8,
             num_layers=4,
             max_seq_length=256,
         ).to(device)

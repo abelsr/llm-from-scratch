@@ -91,6 +91,7 @@ table.add_row("Device", f"{device}")
 console.print(table)
 
 console.print("[bold]Starting training loop...[/bold]")
+total, n = 0.0, 0
 with Progress(
     SpinnerColumn(),
     TextColumn("[progress.description]{task.description}"),
@@ -101,7 +102,6 @@ with Progress(
 ) as progress:
     epochs = 5
     for epoch in range(epochs):
-        total, n = 0.0, 0
         with torch.amp.autocast(
             device_type=device.type,
             dtype=torch.bfloat16,
@@ -116,13 +116,15 @@ with Progress(
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
-                total += loss.item()
+                loss_value = loss.item()
+                total += loss_value
                 n += 1
-                progress.update(
-                    task,
-                    advance=1,
-                    description=f"Epoch {epoch + 1}/{epochs} • loss {loss.item():.4f}",
-                )
+                if n % 10 == 0:
+                    progress.update(
+                        task,
+                        advance=10,
+                        description=f"Epoch {epoch + 1}/{epochs} • loss {loss.item():.4f}",
+                    )
 
         progress.console.print(
             f"  [bold]Epoch {epoch + 1}/5[/bold] — avg loss "

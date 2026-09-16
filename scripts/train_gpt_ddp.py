@@ -84,7 +84,7 @@ def main() -> None:
             raise ValueError("MAX_TOKENS must be greater than the block size (256).")
         dataset = GPTDataset(ids, block_size=256)
         vocab_size = int(ids.max() + 1)
-        batch_size_per_gpu = 32
+        batch_size_per_gpu = 64
         workers_per_process = max(1, min(8, (os.cpu_count() or 1) // world_size))
         sampler = DistributedSampler(dataset, shuffle=True)
         dataloader = DataLoader(

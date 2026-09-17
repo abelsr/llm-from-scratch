@@ -38,9 +38,10 @@ class MultiHeadAttentionBlock(nn.Module):
         self.head_dim = embed_dim // num_heads
         if self.head_dim % 2 != 0:
             raise ValueError("head_dim must be even to use RoPE")
-        self.w_q = nn.Linear(embed_dim, embed_dim)
-        self.w_k = nn.Linear(embed_dim, embed_dim)
-        self.w_v = nn.Linear(embed_dim, embed_dim)
+        # self.w_q = nn.Linear(embed_dim, embed_dim)
+        # self.w_k = nn.Linear(embed_dim, embed_dim)
+        # self.w_v = nn.Linear(embed_dim, embed_dim)
+        self.proj_qkv = nn.Linear(embed_dim, 3 * embed_dim)
         self.w_o = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
         inv_freq = 1.0 / (
@@ -74,21 +75,11 @@ class MultiHeadAttentionBlock(nn.Module):
         """
 
         batch_size, seq_length, _ = x.size()
-        Q = (
-            self.w_q(x)
-            .view(batch_size, seq_length, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )  # (batch_size, num_heads, seq_length, head_dim)
-        K = (
-            self.w_k(x)
-            .view(batch_size, seq_length, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )  # (batch_size, num_heads, seq_length, head_dim)
-        V = (
-            self.w_v(x)
-            .view(batch_size, seq_length, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )  # (batch_size, num_heads, seq_length, head_dim)
+        qkv = self.proj_qkv(x).view(batch_size, seq_length, self.num_heads, 3 * self.head_dim)
+        Q, K, V = qkv.chunk(3, dim=-1)
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
         if seq_length > self.rope_cos.size(0):
             raise ValueError(
                 f"Sequence length {seq_length} exceeds RoPE limit "

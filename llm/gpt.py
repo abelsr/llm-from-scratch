@@ -47,6 +47,23 @@ class GPT(nn.Module):
         self.head = nn.Linear(embed_dim, vocab_size, bias=False)
         self.head.weight = self.token_embedding.weight
 
+        self.apply(self._init_weights)
+        # Scaled residual init (GPT-2): reduce variance growth with depth.
+        residual_std = 0.02 / (2 * self.num_layers) ** 0.5
+        for layer in self.layers:
+            nn.init.normal_(layer.attention.w_o.weight, mean=0.0, std=residual_std)
+            nn.init.normal_(layer.mlp.down_proj.weight, mean=0.0, std=residual_std)
+        # Re-tie after init (apply visits shared Parameter twice otherwise).
+        self.head.weight = self.token_embedding.weight
+
+    def _init_weights(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # Input of the model is a tensor of shape (batch_size, seq_length) containing token indices.

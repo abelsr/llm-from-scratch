@@ -11,6 +11,8 @@ wheels/
 
 # Data & training artifacts (large, not for VCS)
 data/
+*.csv
 
 # Checkpoints
 checkpoints/
+

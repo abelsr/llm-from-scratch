@@ -83,7 +83,8 @@ class GPTDataset(Dataset):
     def __init__(
         self,
         data: np.ndarray,
-        block_size: int = 256
+        block_size: int = 256,
+        stride: int = 1,
     ):
         """
         Initialize the GPTDataset.
@@ -91,10 +92,17 @@ class GPTDataset(Dataset):
         Args:
             data: The encoded data as a numpy array.
             block_size: The size of each block of data to return.
+            stride: Step between consecutive windows. Use stride=block_size
+                for non-overlapping chunks (~256x fewer windows than stride=1).
         """
+        if stride < 1:
+            raise ValueError("stride must be >= 1")
         self.data = data.astype(np.int64)
         self.block_size = block_size
-        self.n = len(data) - block_size
+        self.stride = stride
+        self.n = (len(data) - block_size - 1) // stride + 1
+        if self.n < 1:
+            raise ValueError("Corpus too short for the given block_size")
 
     def __len__(self):
         return self.n
@@ -108,10 +116,11 @@ class GPTDataset(Dataset):
         Returns:
             The block of data at the specified index.
         """
+        start = idx * self.stride
         x = torch.from_numpy(
-            self.data[idx: idx + self.block_size]
+            self.data[start: start + self.block_size]
         )
         y = torch.from_numpy(
-            self.data[idx + 1: idx + 1 + self.block_size]
+            self.data[start + 1: start + 1 + self.block_size]
         )
         return x, y

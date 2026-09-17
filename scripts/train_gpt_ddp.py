@@ -23,7 +23,7 @@ from rich.progress import (
 )
 from rich.table import Table
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -53,6 +53,17 @@ def run_validation(
             count += 1
     raw_model.train()
     return total / max(count, 1)
+
+def get_model_params_text(n_params: int) -> str:
+    """Return a human-readable string for the number of parameters."""
+    if n_params < 1_000:
+        return f"{n_params} params"
+    elif n_params < 1_000_000:
+        return f"{n_params / 1_000:.1f}K params"
+    elif n_params < 1_000_000_000:
+        return f"{n_params / 1_000_000:.1f}M params"
+    else:
+        return f"{n_params / 1_000_000_000:.1f}B params"
 
 
 def run_generation_demo(
@@ -147,29 +158,55 @@ def main() -> None:
 
         # max_tokens = int(os.environ.get("MAX_TOKENS", "500000"))
         max_tokens = int(os.environ.get("MAX_TOKENS", "-1"))  # -1: use all tokens
+        # Lista de .bin a combinar, ej:
+        # CORPUS_BINS="data/tokenizer/corpus_ids.bin,data/fineweb-edu/edu_ids.bin"
+        # MAX_TOKENS aplica como tope por archivo.
+        corpus_bins = [
+            p.strip()
+            for p in os.environ.get(
+                "CORPUS_BINS", "data/tokenizer/corpus_ids.bin"
+            ).split(",")
+            if p.strip()
+        ]
+        if not corpus_bins:
+            raise ValueError("CORPUS_BINS está vacío.")
         # rank_log("loading corpus")
-        ids = np.fromfile(
-            "data/tokenizer/corpus_ids.bin",
-            dtype=np.int32,
-            count=max_tokens if max_tokens > 0 else -1,
-        )
-        if len(ids) <= block_size:
-            raise ValueError("MAX_TOKENS must be greater than the block size (256).")
-        # Split train/val por posición: el val es el 1% final (sin shuffle).
-        # Así la val loss mide generalización, no memorización.
-        n_val_tokens = int(len(ids) * val_fraction)
-        if n_val_tokens > block_size + 1:
-            train_ids = ids[:-n_val_tokens]
-            val_ids = ids[-n_val_tokens:]
-        else:
-            train_ids, val_ids = ids, None
-        dataset = GPTDataset(train_ids, block_size=block_size, stride=stride)
-        val_dataset = (
-            GPTDataset(val_ids, block_size=block_size, stride=stride)
-            if val_ids is not None
-            else None
-        )
-        vocab_size = int(ids.max() + 1)
+        bin_token_counts: list[tuple[str, int]] = []
+        train_parts: list[GPTDataset] = []
+        val_parts: list[GPTDataset] = []
+        vocab_max = 0
+        for bin_path in corpus_bins:
+            if not os.path.exists(bin_path):
+                raise FileNotFoundError(f"Corpus .bin no encontrado: {bin_path}")
+            # memmap: no carga los GB a RAM, GPTDataset lee ventanas bajo demanda.
+            mm = np.memmap(bin_path, dtype=np.int32, mode="r")
+            if max_tokens > 0:
+                mm = mm[:max_tokens]
+            if len(mm) <= block_size:
+                raise ValueError(f"{bin_path}: muy corto para block_size={block_size}.")
+            bin_token_counts.append((bin_path, len(mm)))
+            vocab_max = max(vocab_max, int(mm.max()))
+            # Split train/val por archivo: el val de cada corpus mide
+            # generalización dentro de su propio dominio.
+            n_val = int(len(mm) * val_fraction)
+            if n_val > block_size + 1:
+                train_mm, val_mm = mm[:-n_val], mm[-n_val:]
+            else:
+                train_mm, val_mm = mm, None
+            train_parts.append(
+                GPTDataset(train_mm, block_size=block_size, stride=stride)
+            )
+            if val_mm is not None:
+                val_parts.append(
+                    GPTDataset(val_mm, block_size=block_size, stride=stride)
+                )
+        dataset = train_parts[0] if len(train_parts) == 1 else ConcatDataset(train_parts)
+        val_dataset = None
+        if val_parts:
+            val_dataset = val_parts[0] if len(val_parts) == 1 else ConcatDataset(val_parts)
+        corpus_tokens_total = sum(n for _, n in bin_token_counts)
+        val_tokens_total = sum(len(v) * stride for v in val_parts) if val_parts else 0
+        vocab_size = vocab_max + 1
         expected_init_loss = math.log(vocab_size)
         workers_per_process = max(1, min(8, (os.cpu_count() or 1) // world_size))
         sampler = DistributedSampler(dataset, shuffle=True)
@@ -226,10 +263,13 @@ def main() -> None:
             table.add_column("Component")
             table.add_column("Value")
             table.add_row("Dataset size", f"{len(dataset):,}")
-            table.add_row("Corpus tokens", f"{len(ids):,}")
+            table.add_row("Corpus bins", f"{len(bin_token_counts)} file(s)")
+            for bin_path, n_toks in bin_token_counts:
+                table.add_row(f"  {bin_path}", f"{n_toks:,} tokens")
+            table.add_row("Corpus tokens", f"{corpus_tokens_total:,}")
             table.add_row(
                 "Val tokens",
-                f"{len(val_ids):,}" if val_ids is not None else "none",
+                f"{val_tokens_total:,}" if val_parts else "none",
             )
             table.add_row("Vocab size", f"{vocab_size:,}")
             table.add_row("Expected init loss ln(V)", f"{expected_init_loss:.4f}")
@@ -243,7 +283,7 @@ def main() -> None:
             table.add_row("Base LR / warmup", f"{base_lr:g} / {warmup_steps:,}")
             table.add_row("Workers per rank", str(workers_per_process))
             table.add_row("torch.compile", str(use_compile))
-            table.add_row("Model parameters", f"{sum(p.numel() for p in model.parameters()):,}")
+            table.add_row("Model parameters", f"{get_model_params_text(sum(p.numel() for p in model.parameters()))}")
             console.print(table)
 
         epochs = int(os.environ.get("EPOCHS", "5"))
@@ -378,7 +418,8 @@ def main() -> None:
                                 "stride": stride,
                                 "batch_size_per_gpu": batch_size_per_gpu,
                                 "world_size": world_size,
-                                "max_tokens": max_tokens,
+                                "corpus_bins": corpus_bins,
+                                "max_tokens_per_bin": max_tokens,
                                 "base_lr": base_lr,
                                 "warmup_steps": warmup_steps,
                             },

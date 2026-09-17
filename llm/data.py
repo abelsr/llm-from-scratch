@@ -97,7 +97,11 @@ class GPTDataset(Dataset):
         """
         if stride < 1:
             raise ValueError("stride must be >= 1")
-        self.data = data.astype(np.int64)
+        # NOTE: keep a reference, do NOT cast the whole array to int64.
+        # With multi-GB corpora (FineWeb-Edu) a full copy would duplicate
+        # RAM per DDP rank. The per-window int64 cast in __getitem__ is
+        # only 256 ints and is negligible.
+        self.data = data
         self.block_size = block_size
         self.stride = stride
         self.n = (len(data) - block_size - 1) // stride + 1
@@ -117,10 +121,12 @@ class GPTDataset(Dataset):
             The block of data at the specified index.
         """
         start = idx * self.stride
+        # Cast per window (256 ints) instead of the whole corpus: cheap
+        # and keeps np.memmap-backed corpora RAM-free.
         x = torch.from_numpy(
-            self.data[start: start + self.block_size]
+            np.asarray(self.data[start: start + self.block_size], dtype=np.int64)
         )
         y = torch.from_numpy(
-            self.data[start + 1: start + 1 + self.block_size]
+            np.asarray(self.data[start + 1: start + 1 + self.block_size], dtype=np.int64)
         )
         return x, y

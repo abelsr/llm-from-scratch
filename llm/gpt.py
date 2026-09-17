@@ -72,6 +72,7 @@ class GPT(nn.Module):
         logits = self.head(x)  # (batch_size, seq_length, vocab_size)
         return logits
 
+    @torch.inference_mode()
     def generate(
         self,
         input_ids: torch.Tensor,
@@ -89,12 +90,10 @@ class GPT(nn.Module):
         Returns:
             torch.Tensor: Generated token indices of shape (batch_size, seq_length + max_new_tokens).
         """
+        generated_ids = input_ids
         for _ in range(max_new_tokens):
-            input_ids = input_ids[
-                :, -self.max_seq_length :
-            ]  # Ensure input does not exceed max_seq_length
-            assert input_ids.size(1) <= self.max_seq_length, "Input sequence length exceeds max_seq_length"
-            logits = self.forward(input_ids)  # (batch_size, seq_length, vocab_size)
+            context = generated_ids[:, -self.max_seq_length :]
+            logits = self.forward(context)  # (batch_size, seq_length, vocab_size)
             next_token_logits = logits[:, -1, :]  # (batch_size, vocab_size)
             next_token_logits = next_token_logits / temperature
 
@@ -107,9 +106,7 @@ class GPT(nn.Module):
             next_token_probs = torch.softmax(
                 next_token_logits, dim=-1
             )  # (batch_size, vocab_size)
-            next_token = torch.multinomial(next_token_probs, num_samples=1)  #
+            next_token = torch.multinomial(next_token_probs, num_samples=1)
 
-            input_ids = torch.cat(
-                (input_ids, next_token), dim=1
-            )  # (batch_size, seq_length + 1)
-        return input_ids
+            generated_ids = torch.cat((generated_ids, next_token), dim=1)
+        return generated_ids

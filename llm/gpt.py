@@ -93,6 +93,7 @@ class GPT(nn.Module):
             input_ids = input_ids[
                 :, -self.max_seq_length :
             ]  # Ensure input does not exceed max_seq_length
+            assert input_ids.size(1) <= self.max_seq_length, "Input sequence length exceeds max_seq_length"
             logits = self.forward(input_ids)  # (batch_size, seq_length, vocab_size)
             next_token_logits = logits[:, -1, :]  # (batch_size, vocab_size)
             next_token_logits = next_token_logits / temperature

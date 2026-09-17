@@ -38,3 +38,40 @@ class LayerNorm(nn.Module):
         var = x.var(dim=-1, keepdim=True, unbiased=False)
         normalized_x = (x - mean) / torch.sqrt(var + self.eps)
         return self.gamma * normalized_x + self.beta
+
+
+class RMSNorm(nn.Module):
+    """
+    RMSNorm
+
+    This module implements Root Mean Square Layer Normalization (RMSNorm), which normalizes the input based on the root mean square of the features.
+    It is an alternative to traditional layer normalization and can be beneficial in certain architectures.
+
+    Args:
+    embed_dim (int): The dimensionality of the input embeddings.
+    eps (float): A small value added to the denominator for numerical stability.
+
+    Returns:
+    torch.Tensor: The normalized output, which has the same shape as the input.
+    """
+
+    def __init__(self, embed_dim: int, eps: float = 1e-5) -> None:
+        super(RMSNorm, self).__init__()
+        self.embed_dim = embed_dim
+        self.eps = eps
+        self.gamma = nn.Parameter(torch.ones(embed_dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the RMSNorm.
+
+        Args:
+            x (torch.Tensor): Input embeddings of shape (batch_size, seq_length, embed_dim).
+
+        Returns:
+            torch.Tensor: Normalized output with the same shape as the input.
+        """
+        normalized_x = x * torch.rsqrt(
+            x.pow(2).mean(dim=-1, keepdim=True) + self.eps
+        )
+        return self.gamma * normalized_x

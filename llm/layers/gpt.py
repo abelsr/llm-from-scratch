@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from .attention import MultiHeadAttentionBlock
 from .mlp import FeedForwardBlock
-from .norm import LayerNorm
+from .norm import LayerNorm, RMSNorm
 
 
 class GPTBlock(nn.Module):
@@ -24,9 +24,11 @@ class GPTBlock(nn.Module):
         self.attention = MultiHeadAttentionBlock(
             embed_dim, num_heads, dropout, max_seq_length
         )
-        self.norm1 = LayerNorm(embed_dim)
+        #self.norm1 = LayerNorm(embed_dim)
+        self.norm1 = RMSNorm(embed_dim)  # Using RMSNorm instead of LayerNorm
         self.mlp = FeedForwardBlock(embed_dim, mlp_expansion_factor, dropout)
-        self.norm2 = LayerNorm(embed_dim)
+        # self.norm2 = LayerNorm(embed_dim)
+        self.norm2 = RMSNorm(embed_dim)  # Using RMSNorm instead of LayerNorm
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attention(self.norm1(x))  # Residual connection around attention

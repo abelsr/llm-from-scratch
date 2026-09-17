@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from .layers.gpt import GPTBlock
+from .layers.norm import LayerNorm, RMSNorm
 
 
 class GPT(nn.Module):
@@ -39,7 +40,8 @@ class GPT(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-        self.ln_f = nn.LayerNorm(embed_dim)
+        # self.ln_f = nn.LayerNorm(embed_dim)
+        self.ln_f = RMSNorm(embed_dim)  # Using RMSNorm instead of LayerNorm
         self.head = nn.Linear(embed_dim, vocab_size, bias=False)
         self.head.weight = self.token_embedding.weight
 

@@ -36,11 +36,30 @@ class MultiHeadAttentionBlock(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
+        if self.head_dim % 2 != 0:
+            raise ValueError("head_dim must be even to use RoPE")
         self.w_q = nn.Linear(embed_dim, embed_dim)
         self.w_k = nn.Linear(embed_dim, embed_dim)
         self.w_v = nn.Linear(embed_dim, embed_dim)
         self.w_o = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
+        inv_freq = 1.0 / (
+            10000
+            ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim)
+        )
+        positions = torch.arange(max_seq_length, dtype=torch.float32)
+        angles = torch.outer(positions, inv_freq)
+        self.register_buffer(
+            "rope_cos", torch.repeat_interleave(angles.cos(), 2, dim=-1), persistent=False
+        )
+        self.register_buffer(
+            "rope_sin", torch.repeat_interleave(angles.sin(), 2, dim=-1), persistent=False
+        )
+
+    @staticmethod
+    def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+        x = x.reshape(*x.shape[:-1], -1, 2)
+        return torch.stack((-x[..., 1], x[..., 0]), dim=-1).flatten(-2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -70,6 +89,15 @@ class MultiHeadAttentionBlock(nn.Module):
             .view(batch_size, seq_length, self.num_heads, self.head_dim)
             .transpose(1, 2)
         )  # (batch_size, num_heads, seq_length, head_dim)
+        if seq_length > self.rope_cos.size(0):
+            raise ValueError(
+                f"Sequence length {seq_length} exceeds RoPE limit "
+                f"{self.rope_cos.size(0)}"
+            )
+        cos = self.rope_cos[:seq_length].to(dtype=Q.dtype).unsqueeze(0).unsqueeze(0)
+        sin = self.rope_sin[:seq_length].to(dtype=Q.dtype).unsqueeze(0).unsqueeze(0)
+        Q = Q * cos + self._rotate_half(Q) * sin
+        K = K * cos + self._rotate_half(K) * sin
 
         output = F.scaled_dot_product_attention(
             Q,

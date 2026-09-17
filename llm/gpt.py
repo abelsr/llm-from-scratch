@@ -26,7 +26,6 @@ class GPT(nn.Module):
         self.max_seq_length = max_seq_length
 
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
-        self.position_embedding = nn.Embedding(max_seq_length, embed_dim)
         self.embed_dropout = nn.Dropout(dropout)
         self.layers = nn.ModuleList(
             [
@@ -51,17 +50,17 @@ class GPT(nn.Module):
         batch_size, seq_length = x.size()
 
         # Create position indices and get token and position embeddings.
-        position_indices = torch.arange(seq_length, device=x.device).unsqueeze(
-            0
-        )  # (1, seq_length)
+        # position_indices = torch.arange(seq_length, device=x.device).unsqueeze(
+        #     0
+        # )  # (1, seq_length)
 
         # Get token and position embeddings, and sum them to get the input to the transformer blocks.
         token_embeds = self.token_embedding(x)  # (batch_size, seq_length, embed_dim)
-        position_embeds = self.position_embedding(
-            position_indices
-        )  # (1, seq_length, embed_dim)
+        # position_embeds = self.position_embedding(
+        #     position_indices
+        # )  # (1, seq_length, embed_dim)
         x = token_embeds
-        x = x + position_embeds  # (batch_size, seq_length, embed_dim)
+        # x = x + position_embeds  # (batch_size, seq_length, embed_dim)
         x = self.embed_dropout(x)
 
         # Pass through the transformer blocks.

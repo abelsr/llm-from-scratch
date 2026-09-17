@@ -107,6 +107,7 @@ def main() -> None:
             vocab_size=vocab_size,
             embed_dim=1024,
             num_heads=8,
+            num_kv_heads=2,
             num_layers=4,
             max_seq_length=256,
         ).to(device)
@@ -219,7 +220,8 @@ def main() -> None:
                             "config": {
                                 "vocab_size": vocab_size,
                                 "embed_dim": 1024,
-                                "num_heads": 4,
+                                "num_heads": 8,
+                                "num_kv_heads": 2,
                                 "num_layers": 4,
                                 "max_seq_length": 256,
                                 "batch_size_per_gpu": batch_size_per_gpu,

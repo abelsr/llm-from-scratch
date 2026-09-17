@@ -15,11 +15,13 @@ class GPT(nn.Module):
         mlp_expansion: int = 4,
         dropout: float = 0.1,
         max_seq_length: int = 1024,
+        num_kv_heads: int | None = None,
     ):
         super(GPT, self).__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads or num_heads
         self.num_layers = num_layers
         self.mlp_expansion = mlp_expansion
         self.dropout = dropout
@@ -35,6 +37,7 @@ class GPT(nn.Module):
                     dropout=dropout,
                     mlp_expansion_factor=mlp_expansion,
                     max_seq_length=max_seq_length,
+                    num_kv_heads=num_kv_heads,
                 )
                 for _ in range(num_layers)
             ]

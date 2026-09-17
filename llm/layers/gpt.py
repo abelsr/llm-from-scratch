@@ -14,6 +14,7 @@ class GPTBlock(nn.Module):
         mlp_expansion_factor: int = 4,
         dropout: float = 0.1,
         max_seq_length: int = 1024,
+        num_kv_heads: int | None = None,
     ):
         super(GPTBlock, self).__init__()
         self.embed_dim = embed_dim
@@ -22,7 +23,7 @@ class GPTBlock(nn.Module):
         self.dropout = dropout
         self.max_seq_length = max_seq_length
         self.attention = MultiHeadAttentionBlock(
-            embed_dim, num_heads, dropout, max_seq_length
+            embed_dim, num_heads, dropout, max_seq_length, num_kv_heads
         )
         #self.norm1 = LayerNorm(embed_dim)
         self.norm1 = RMSNorm(embed_dim)  # Using RMSNorm instead of LayerNorm

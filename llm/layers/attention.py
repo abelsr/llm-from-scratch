@@ -29,6 +29,7 @@ class MultiHeadAttentionBlock(nn.Module):
         num_heads: int,
         dropout: float = 0.1,
         max_seq_length: int = 1024,
+        num_kv_heads: int | None = None,
     ) -> None:
         super(MultiHeadAttentionBlock, self).__init__()
         if embed_dim % num_heads != 0:
@@ -36,12 +37,16 @@ class MultiHeadAttentionBlock(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
+        self.num_kv_heads = num_kv_heads or num_heads
+        if num_heads % self.num_kv_heads != 0:
+            raise ValueError("num_heads must be divisible by num_kv_heads")
         if self.head_dim % 2 != 0:
             raise ValueError("head_dim must be even to use RoPE")
-        # self.w_q = nn.Linear(embed_dim, embed_dim)
-        # self.w_k = nn.Linear(embed_dim, embed_dim)
-        # self.w_v = nn.Linear(embed_dim, embed_dim)
-        self.proj_qkv = nn.Linear(embed_dim, 3 * embed_dim)
+        self.num_groups = self.num_heads // self.num_kv_heads
+        self.q_dim = num_heads * self.head_dim
+        self.kv_dim = self.num_kv_heads * self.head_dim
+        self.proj_qkv = nn.Linear(embed_dim, self.q_dim + 2 * self.kv_dim)
+
         self.w_o = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
         inv_freq = 1.0 / (
@@ -75,11 +80,11 @@ class MultiHeadAttentionBlock(nn.Module):
         """
 
         batch_size, seq_length, _ = x.size()
-        qkv = self.proj_qkv(x).view(batch_size, seq_length, self.num_heads, 3 * self.head_dim)
-        Q, K, V = qkv.chunk(3, dim=-1)
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+        qkv = self.proj_qkv(x)
+        Q, K, V = qkv.split([self.q_dim, self.kv_dim, self.kv_dim], dim=-1)
+        Q = Q.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
+        K = K.view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        V = V.view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
         if seq_length > self.rope_cos.size(0):
             raise ValueError(
                 f"Sequence length {seq_length} exceeds RoPE limit "
@@ -89,6 +94,9 @@ class MultiHeadAttentionBlock(nn.Module):
         sin = self.rope_sin[:seq_length].to(dtype=Q.dtype).unsqueeze(0).unsqueeze(0)
         Q = Q * cos + self._rotate_half(Q) * sin
         K = K * cos + self._rotate_half(K) * sin
+        if self.num_groups > 1:
+            K = K.repeat_interleave(self.num_groups, dim=1)
+            V = V.repeat_interleave(self.num_groups, dim=1)
 
         output = F.scaled_dot_product_attention(
             Q,
